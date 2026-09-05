@@ -58,7 +58,7 @@ use windows_sys::Win32::UI::Shell::{
 use windows_sys::Win32::UI::WindowsAndMessaging::*;
 
 const CLASS_NAME: &str = "BrowserLauncherMainWindow";
-const WINDOW_TITLE: &str = "Browser Launcher";
+const WINDOW_TITLE: &str = concat!("Browser Launcher (", env!("CARGO_PKG_VERSION"), ")");
 const WM_TRAY: u32 = WM_APP + 1;
 const WM_SHOW_SETTINGS: u32 = WM_APP + 2;
 
@@ -700,7 +700,7 @@ unsafe fn create_settings_controls(hwnd: HWND) {
         tr(english, "Jazyk aplikace:", "Application language:"),
         24,
         155,
-        180,
+        150,
         22,
         0,
         0,
@@ -709,9 +709,9 @@ unsafe fn create_settings_controls(hwnd: HWND) {
         hwnd,
         "COMBOBOX",
         "",
-        204,
+        174,
         151,
-        200,
+        130,
         120,
         WS_TABSTOP as i32 | CBS_DROPDOWNLIST,
         ID_LANGUAGE as usize,

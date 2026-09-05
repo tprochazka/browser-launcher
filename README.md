@@ -4,6 +4,8 @@ A minimalist tray URL router for Windows 10 and 11. It registers as an
 HTTP/HTTPS handler, selects the configured real browser, and forwards the URL
 with optional arguments.
 
+Current version: **0.9.0**.
+
 ## Features
 
 - runs quietly as a single instance in the Windows notification area,

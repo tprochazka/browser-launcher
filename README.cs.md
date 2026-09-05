@@ -4,6 +4,8 @@ Minimalistický tray „prohlížeč“ pro Windows 10 a 11. Přijme URL jako v�
 handler pro `http`/`https`, vybere podle pravidel skutečný prohlížeč a předá mu
 URL i volitelné argumenty.
 
+Aktuální verze: **0.9.0**.
+
 ## Funkce
 
 - běží tiše jako jediná instance v oznamovací oblasti Windows,
