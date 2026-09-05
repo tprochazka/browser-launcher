@@ -1,98 +1,102 @@
 # Browser Launcher
 
-Minimalistický tray „prohlížeč“ pro Windows 10 a 11. Přijme URL jako výchozí
-handler pro `http`/`https`, vybere podle pravidel skutečný prohlížeč a předá mu
-URL i volitelné argumenty.
+A minimalist tray URL router for Windows 10 and 11. It registers as an
+HTTP/HTTPS handler, selects the configured real browser, and forwards the URL
+with optional arguments.
 
-## Funkce
+## Features
 
-- běží tiše jako jediná instance v oznamovací oblasti Windows,
-- při spuštění s URL předá požadavek běžící instanci; pokud neběží, spustí se a zůstane v tray,
-- seznam systémově registrovaných prohlížečů včetně jejich názvů a ikon,
-- výchozí prohlížeč a argumenty se zástupným textem `{url}`,
-- směrování podle pořadí wildcard pravidel (`*`) nebo regulárních výrazů,
-- poslední nesmazatelný řádek **Výchozí** jako fallback pro pravidla,
-- změna pořadí pravidel přetažením,
-- RAM historie úspěšně otevřených URL s časem, prohlížečem a argumenty,
-- kliknutí na URL nebo argumenty v historii kopíruje příslušnou hodnotu,
-- kontextové menu historie umí kopírovat URL, argumenty nebo celý záznam,
-- zkopírování poslední URL z tray menu,
-- registrace aplikace jako kandidáta výchozího prohlížeče a otevření systémového nastavení,
-- české a anglické uživatelské rozhraní,
-- bez .NET runtime, WebView, Electronu nebo jiného aplikačního runtime.
+- runs quietly as a single instance in the Windows notification area,
+- forwards URLs to the running instance; if it is not running, starts in the tray,
+- lists system-registered browsers with their names and native icons,
+- configures one default browser and optional arguments with the `{url}`
+  placeholder,
+- routes URLs by ordered wildcard (`*`) or regular-expression rules,
+- keeps an undeletable **Default** fallback row at the end of the rule list,
+- supports drag-and-drop rule reordering,
+- keeps an in-memory history of successfully opened URLs with time, browser, and
+  arguments,
+- copies URL or arguments by clicking the corresponding history cell; the
+  context menu can copy a URL, arguments, or the complete record,
+- copies the last opened URL from the tray menu,
+- registers the application as a candidate default browser and opens Windows
+  default-app settings,
+- provides Czech and English user interfaces,
+- has no .NET runtime, WebView, Electron, or other application runtime
+  dependency.
 
-Historie a poslední URL se drží pouze v RAM a při ukončení procesu zaniknou.
-Trvalé nastavení se ukládá do `HKCU\Software\BrowserLauncher`.
+History and the last URL exist only in RAM and disappear when the process exits.
+Persistent settings are stored under `HKCU\\Software\\BrowserLauncher`.
 
-## Požadavky
+## Requirements
 
-- Windows 10 nebo Windows 11 (64bit),
-- Rust 1.85 nebo novější, toolchain `x86_64-pc-windows-msvc`,
-- Visual Studio Build Tools s workloadem **Desktop development with C++**.
+- Windows 10 or Windows 11 (64-bit),
+- Rust 1.85 or newer with the `x86_64-pc-windows-msvc` toolchain,
+- Visual Studio Build Tools with the **Desktop development with C++** workload.
 
-Projekt používá Rust edition 2024. Přesné verze crate závislostí jsou v
-`Cargo.lock`; hlavními závislostmi jsou `windows-sys`, `regex` a build-time
-`embed-resource`.
+The project uses Rust edition 2024. Exact crate versions are pinned in
+`Cargo.lock`; the main dependencies are `windows-sys`, `regex`, and the
+build-time `embed-resource` crate.
 
-## Sestavení
+## Build
+
+Run a release build from the project root:
 
 ```powershell
 cargo build --release
 ```
 
-Výstup je `target\release\browser-launcher.exe`. Pro sestavení, nasazení do
-stabilní per-user cesty a restart běžící aplikace použijte skript v rootu:
+The executable is written to `target\\release\\browser-launcher.exe`. To build,
+deploy to the stable per-user location, refresh registration, and replace the
+running instance, use:
 
 ```powershell
-.\Build-Release.ps1
+.\\Build-Release.ps1
 ```
 
-Skript nasadí EXE do `%LOCALAPPDATA%\BrowserLauncher\BrowserLauncher.exe`,
-obnoví registraci a spustí novou tray instanci. Pro build a nasazení bez startu:
+To build and deploy without starting the application:
 
 ```powershell
-.\Build-Release.ps1 -NoStart
+.\\Build-Release.ps1 -NoStart
 ```
 
-## Použití
+The deployment path is
+`%LOCALAPPDATA%\\BrowserLauncher\\BrowserLauncher.exe`.
 
-Spuštění s URL:
+## Usage
+
+Start the executable with a URL:
 
 ```powershell
-.\target\release\browser-launcher.exe "https://example.com"
+.\\target\\release\\browser-launcher.exe "https://example.com"
 ```
 
-Pokud aplikace běží, URL předá existující instanci. Pokud neběží, Windows ji
-spustí, URL se otevře ve vybraném prohlížeči a aplikace zůstane pouze v tray.
+If the application is already running, the URL is forwarded to that instance.
+Otherwise Windows starts it, the URL is opened in the selected browser, and the
+application remains only in the tray.
 
-V nastavení lze vybrat výchozí prohlížeč, jeho argumenty a pravidla směrování.
-Výchozí řádek pravidel nelze smazat ani přesunout. Windows neumožňuje aplikaci
-tiše změnit výchozího handlera; tlačítko registrace proto připraví registraci a
-otevře systémovou stránku, kde volbu potvrdí uživatel.
+Use **Settings** to select the default browser, its arguments, and routing
+rules. The **Default** rule cannot be deleted or moved. Windows does not allow
+an application to silently change the default handler; the registration button
+therefore prepares the registration and opens the system page where the user
+confirms the choice.
 
-Ruční registrace stabilní kopie bez otevření systémového nastavení:
+To register the stable copy without opening the system settings page:
 
 ```powershell
-.\target\release\browser-launcher.exe --install-register
+.\\target\\release\\browser-launcher.exe --install-register
 ```
 
-## Kontrola
+## Verification
 
 ```powershell
 cargo test
 cargo clippy --all-targets -- -D warnings
 ```
 
-## Dokumentace
+## License
 
-- [Zadání](docs/zadani.md)
-- [Implementační analýza](docs/implementacni-analyza.md)
-- [Plán implementace](docs/tasks.md)
+Browser Launcher is licensed under the GNU General Public License v3.0 or later.
+See [LICENSE](LICENSE).
 
-Build výstupy v `target/` a lokální vývojové artefakty nejsou součástí
-repozitáře.
-
-## Licence
-
-Browser Launcher je licencován pod GNU General Public License v3.0 nebo novější.
-Viz [LICENSE](LICENSE).
+The Czech README is available as [README.cs.md](README.cs.md).
