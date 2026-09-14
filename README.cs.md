@@ -4,7 +4,7 @@ Malý tray router URL pro Windows 10 a 11. Přijme URL jako handler pro
 `http`/`https`, podle pravidel vybere prohlížeč a předá mu URL i volitelné
 argumenty.
 
-Aktuální verze: **0.9.0**.
+Aktuální verze: **0.9.1**.
 
 ## Funkce
 

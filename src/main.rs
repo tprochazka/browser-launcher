@@ -2231,7 +2231,9 @@ unsafe fn decode_copydata_url(data: &COPYDATASTRUCT) -> Option<String> {
     }
     let bytes = std::slice::from_raw_parts(data.lpData.cast::<u8>(), data.cbData as usize);
     let units = bytes
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|pair| u16::from_ne_bytes([pair[0], pair[1]]))
         .take_while(|unit| *unit != 0)
         .collect::<Vec<_>>();

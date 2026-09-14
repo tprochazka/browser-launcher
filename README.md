@@ -4,7 +4,7 @@ A small Windows 10/11 tray URL router. It registers as an HTTP/HTTPS handler,
 chooses a browser using the configured rules, and forwards the URL with
 optional arguments.
 
-Current version: **0.9.0**.
+Current version: **0.9.1**.
 
 ## Features
 
