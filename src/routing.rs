@@ -193,4 +193,17 @@ mod tests {
         }];
         assert_eq!(decode_rules(&encode_rules(&rules)).unwrap(), rules);
     }
+
+    #[test]
+    fn persistence_rejects_truncated_and_invalid_fields() {
+        assert!(decode_rules("W4:test").is_err());
+        assert!(decode_rules("W999:").is_err());
+        assert!(decode_rules("X0:0:0:").is_err());
+        assert!(decode_rules("Wx:test0:0:").is_err());
+    }
+
+    #[test]
+    fn persistence_rejects_non_utf8_field_boundary() {
+        assert!(decode_rules("W1:\u{00e9}0:0:").is_err());
+    }
 }

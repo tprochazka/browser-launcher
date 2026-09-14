@@ -5,11 +5,12 @@ mod browsers;
 mod config;
 mod foreground;
 mod installation;
+mod instance;
 mod registration;
 mod routing;
 
 use std::cell::RefCell;
-use std::ffi::{OsStr, c_void};
+use std::ffi::OsStr;
 use std::mem::{size_of, zeroed};
 use std::os::windows::ffi::OsStrExt;
 use std::path::Path;
@@ -44,9 +45,9 @@ use windows_sys::Win32::UI::Controls::{
     LVIF_TEXT, LVIS_FOCUSED, LVIS_SELECTED, LVITEMW, LVM_DELETEALLITEMS, LVM_ENSUREVISIBLE,
     LVM_GETNEXTITEM, LVM_HITTEST, LVM_INSERTCOLUMNW, LVM_INSERTITEMW, LVM_SETEXTENDEDLISTVIEWSTYLE,
     LVM_SETIMAGELIST, LVM_SETITEMSTATE, LVM_SETITEMTEXTW, LVN_BEGINDRAG, LVN_ITEMCHANGED,
-    LVNI_SELECTED, LVS_EX_FULLROWSELECT, LVS_REPORT, LVS_SHOWSELALWAYS, LVS_SINGLESEL, LVSIL_SMALL,
-    NM_CLICK, NM_RCLICK, NMHDR, NMLISTVIEW, TCIF_TEXT, TCITEMW, TCM_GETCURSEL, TCM_INSERTITEMW,
-    TCM_SETCURSEL, TCN_SELCHANGE,
+    LVNI_SELECTED, LVS_EX_FULLROWSELECT, LVS_REPORT, LVS_SHAREIMAGELISTS, LVS_SHOWSELALWAYS,
+    LVS_SINGLESEL, LVSIL_SMALL, NM_CLICK, NM_RCLICK, NMHDR, NMLISTVIEW, TCIF_TEXT, TCITEMW,
+    TCM_GETCURSEL, TCM_INSERTITEMW, TCM_SETCURSEL, TCN_SELCHANGE,
 };
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     EnableWindow, ReleaseCapture, SetCapture, SetFocus,
@@ -61,6 +62,7 @@ const CLASS_NAME: &str = "BrowserLauncherMainWindow";
 const WINDOW_TITLE: &str = concat!("Browser Launcher (", env!("CARGO_PKG_VERSION"), ")");
 const WM_TRAY: u32 = WM_APP + 1;
 const WM_SHOW_SETTINGS: u32 = WM_APP + 2;
+static mut TASKBAR_CREATED_MESSAGE: u32 = 0;
 
 const ID_SETTINGS: usize = 1001;
 const ID_COPY_LAST: usize = 1002;
@@ -144,18 +146,30 @@ fn main() {
     }
     unsafe {
         let incoming_url = command_line_url();
-        let existing = FindWindowW(wide(CLASS_NAME).as_ptr(), wide(WINDOW_TITLE).as_ptr());
-        if !existing.is_null() {
-            if let Some(url) = incoming_url {
-                foreground::grant_foreground_activation();
-                send_url(existing, &url);
-            } else {
-                PostMessageW(existing, WM_SHOW_SETTINGS, 0, 0);
+        let startup = match instance::begin(CLASS_NAME) {
+            Ok(startup) => startup,
+            Err(error) => {
+                show_error(&format!("Single-instance startup failed: {error}"));
+                return;
             }
-            return;
-        }
+        };
+        let startup_guard = match startup {
+            instance::StartupState::Existing(existing) => {
+                if let Some(url) = incoming_url {
+                    foreground::grant_foreground_activation();
+                    if let Err(error) = instance::send_url(existing, &url) {
+                        show_error(&format!("URL forwarding failed: {error}"));
+                    }
+                } else {
+                    PostMessageW(existing, WM_SHOW_SETTINGS, 0, 0);
+                }
+                return;
+            }
+            instance::StartupState::Primary(guard) => guard,
+        };
 
         let instance = GetModuleHandleW(null());
+        TASKBAR_CREATED_MESSAGE = RegisterWindowMessageW(wide("TaskbarCreated").as_ptr());
         let controls = INITCOMMONCONTROLSEX {
             dwSize: size_of::<INITCOMMONCONTROLSEX>() as u32,
             dwICC: ICC_LISTVIEW_CLASSES | ICC_TAB_CLASSES,
@@ -196,11 +210,11 @@ fn main() {
             null(),
         );
         if hwnd.is_null() {
-            show_error("Hlavní okno se nepodařilo vytvořit.");
             return;
         }
 
         add_tray_icon(hwnd);
+        drop(startup_guard);
         if let Some(url) = incoming_url {
             foreground::grant_foreground_activation();
             handle_url(hwnd, url);
@@ -222,8 +236,11 @@ unsafe extern "system" fn window_proc(
 ) -> LRESULT {
     match message {
         WM_CREATE => {
-            create_settings_controls(hwnd);
-            0
+            if create_settings_controls(hwnd) {
+                0
+            } else {
+                -1
+            }
         }
         WM_COMMAND => {
             match wparam & 0xffff {
@@ -255,17 +272,16 @@ unsafe extern "system" fn window_proc(
             0
         }
         WM_COPYDATA => {
-            let data = &*(lparam as *const COPYDATASTRUCT);
-            if data.dwData == 1 && data.cbData >= 2 && !data.lpData.is_null() {
-                let units =
-                    std::slice::from_raw_parts(data.lpData.cast::<u16>(), data.cbData as usize / 2);
-                let end = units
-                    .iter()
-                    .position(|unit| *unit == 0)
-                    .unwrap_or(units.len());
-                handle_url(hwnd, String::from_utf16_lossy(&units[..end]));
+            if lparam != 0 {
+                let data = &*(lparam as *const COPYDATASTRUCT);
+                if data.dwData == 1
+                    && let Some(url) = decode_copydata_url(data)
+                {
+                    handle_url(hwnd, url);
+                    return 1;
+                }
             }
-            1
+            0
         }
         WM_NOTIFY => {
             let notification = &*(lparam as *const NMHDR);
@@ -315,6 +331,10 @@ unsafe extern "system" fn window_proc(
             }
             0
         }
+        message if TASKBAR_CREATED_MESSAGE != 0 && message == TASKBAR_CREATED_MESSAGE => {
+            add_tray_icon(hwnd);
+            0
+        }
         WM_SHOW_SETTINGS => {
             show_settings(hwnd);
             0
@@ -331,26 +351,28 @@ unsafe extern "system" fn window_proc(
         }
         WM_DESTROY => {
             remove_tray_icon(hwnd);
-            STATE.with(|state| {
-                if let Some(state) = state.borrow().as_ref()
-                    && state.image_list != 0
-                {
-                    ImageList_Destroy(state.image_list);
-                }
-                if let Some(state) = state.borrow().as_ref()
-                    && !state.editor_font.is_null()
-                {
-                    DeleteObject(state.editor_font as _);
-                }
-            });
             PostQuitMessage(0);
             0
+        }
+        WM_NCDESTROY => {
+            // Child controls have finished using the shared image list and font.
+            STATE.with(|state| {
+                if let Some(state) = state.borrow_mut().take() {
+                    if state.image_list != 0 {
+                        ImageList_Destroy(state.image_list);
+                    }
+                    if !state.editor_font.is_null() {
+                        DeleteObject(state.editor_font as _);
+                    }
+                }
+            });
+            DefWindowProcW(hwnd, message, wparam, lparam)
         }
         _ => DefWindowProcW(hwnd, message, wparam, lparam),
     }
 }
 
-unsafe fn create_settings_controls(hwnd: HWND) {
+unsafe fn create_settings_controls(hwnd: HWND) -> bool {
     let font = GetStockObject(DEFAULT_GUI_FONT);
     let editor_font_name = wide("Segoe UI");
     let editor_font = CreateFontW(
@@ -369,7 +391,16 @@ unsafe fn create_settings_controls(hwnd: HWND) {
         DEFAULT_PITCH as u32,
         editor_font_name.as_ptr(),
     );
-    let config = Config::load().unwrap_or_default();
+    let config = match Config::load() {
+        Ok(config) => config,
+        Err(error) => {
+            if !editor_font.is_null() {
+                DeleteObject(editor_font as _);
+            }
+            show_error(&format!("Nastavení se nepodařilo načíst: {error}"));
+            return false;
+        }
+    };
     let english = config.language.eq_ignore_ascii_case("en");
     let tabs = create_control(
         hwnd,
@@ -418,7 +449,11 @@ unsafe fn create_settings_controls(hwnd: HWND) {
         76,
         708,
         280,
-        WS_BORDER as i32 | LVS_REPORT as i32 | LVS_SINGLESEL as i32 | LVS_SHOWSELALWAYS as i32,
+        WS_BORDER as i32
+            | LVS_REPORT as i32
+            | LVS_SINGLESEL as i32
+            | LVS_SHOWSELALWAYS as i32
+            | LVS_SHAREIMAGELISTS as i32,
         ID_BROWSER_LIST as usize,
     );
     pages[0].push(browser_list);
@@ -511,7 +546,11 @@ unsafe fn create_settings_controls(hwnd: HWND) {
         76,
         708,
         240,
-        WS_BORDER as i32 | LVS_REPORT as i32 | LVS_SINGLESEL as i32 | LVS_SHOWSELALWAYS as i32,
+        WS_BORDER as i32
+            | LVS_REPORT as i32
+            | LVS_SINGLESEL as i32
+            | LVS_SHOWSELALWAYS as i32
+            | LVS_SHAREIMAGELISTS as i32,
         ID_RULES_LIST as usize,
     );
     pages[1].push(rules_list);
@@ -769,7 +808,7 @@ unsafe fn create_settings_controls(hwnd: HWND) {
     }
     EnumChildWindows(hwnd, Some(set_child_font), font as isize);
     if !editor_font.is_null() {
-        for child in [rule_kind, rule_pattern, rule_browser, rule_arguments] {
+        for child in [rule_pattern, rule_browser, rule_arguments] {
             SendMessageW(child, WM_SETFONT, editor_font as usize, 1);
         }
     }
@@ -924,6 +963,7 @@ unsafe fn create_settings_controls(hwnd: HWND) {
     update_selection_label();
     refresh_rules_list();
     show_selected_page();
+    true
 }
 
 unsafe fn insert_tab(tabs: HWND, index: usize, label: &str) {
@@ -994,12 +1034,17 @@ unsafe fn show_settings(hwnd: HWND) {
 }
 
 unsafe fn show_settings_tab(hwnd: HWND, tab_index: usize) {
-    STATE.with(|state| {
-        if let Some(state) = state.borrow_mut().as_mut() {
-            state.routing_rules = state.config.routing_rules.clone();
-        }
-    });
-    clear_rule_editor();
+    let reopening = IsWindowVisible(hwnd) == 0;
+    if reopening {
+        STATE.with(|state| {
+            if let Some(state) = state.borrow_mut().as_mut() {
+                state.routing_rules = state.config.routing_rules.clone();
+                let language_index = usize::from(state.config.language.eq_ignore_ascii_case("en"));
+                SendMessageW(state.language_combo, CB_SETCURSEL, language_index, 0);
+            }
+        });
+        clear_rule_editor();
+    }
     let values = STATE.with(|state| {
         if let Some(state) = state.borrow().as_ref() {
             let index = state.browsers.iter().position(|browser| {
@@ -1017,11 +1062,24 @@ unsafe fn show_settings_tab(hwnd: HWND, tab_index: usize) {
             None
         }
     });
-    if let Some((args_edit, arguments, browser_list, index)) = values {
+    if let Some((args_edit, arguments, browser_list, index)) = values
+        && reopening
+    {
         set_text(args_edit, &arguments);
         if let Some(index) = index {
             select_browser(browser_list, index);
             SendMessageW(browser_list, LVM_ENSUREVISIBLE, index, 0);
+        } else {
+            let mut clear = LVITEMW {
+                stateMask: LVIS_SELECTED | LVIS_FOCUSED,
+                ..zeroed()
+            };
+            SendMessageW(
+                browser_list,
+                LVM_SETITEMSTATE,
+                usize::MAX,
+                &mut clear as *mut _ as isize,
+            );
         }
         update_selection_label();
         refresh_rules_list();
@@ -1057,6 +1115,9 @@ unsafe fn save_settings(hwnd: HWND) {
         if !Path::new(&config.browser_path).is_file() {
             return Err("Vyberte existující spustitelný soubor prohlížeče.".to_owned());
         }
+        if is_browser_launcher_path(Path::new(&config.browser_path)) {
+            return Err("Browser Launcher nelze nastavit jako cílový prohlížeč.".to_owned());
+        }
         config
             .save()
             .map_err(|error| format!("Nastavení se nepodařilo uložit: {error}"))?;
@@ -1074,13 +1135,13 @@ unsafe fn save_settings(hwnd: HWND) {
 unsafe fn browse_for_browser(hwnd: HWND) {
     let mut file = [0u16; 32768];
     STATE.with(|state| {
-        if let Some(state) = state.borrow().as_ref() {
-            if let Some(index) = selected_browser(state.browser_list) {
-                let current = &state.browsers[index].executable;
-                let encoded: Vec<u16> = current.encode_utf16().collect();
-                let count = encoded.len().min(file.len() - 1);
-                file[..count].copy_from_slice(&encoded[..count]);
-            }
+        if let Some(state) = state.borrow().as_ref()
+            && let Some(index) = selected_browser(state.browser_list)
+        {
+            let current = &state.browsers[index].executable;
+            let encoded: Vec<u16> = current.encode_utf16().collect();
+            let count = encoded.len().min(file.len() - 1);
+            file[..count].copy_from_slice(&encoded[..count]);
         }
     });
     let filter = wide("Aplikace (*.exe)\0*.exe\0Všechny soubory\0*.*\0");
@@ -1093,6 +1154,14 @@ unsafe fn browse_for_browser(hwnd: HWND) {
     dialog.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST;
     if GetOpenFileNameW(&mut dialog) != 0 {
         let selected = from_wide_null(&file);
+        if is_browser_launcher_path(Path::new(&selected)) {
+            message_box(
+                hwnd,
+                "Browser Launcher nelze vybrat jako cílový prohlížeč.",
+                MB_OK | MB_ICONWARNING,
+            );
+            return;
+        }
         let selected_item = STATE.with(|state| {
             if let Some(state) = state.borrow_mut().as_mut() {
                 let index = state
@@ -1138,7 +1207,6 @@ unsafe fn initialize_rules_controls(
     browsers: &[BrowserInfo],
     english: bool,
 ) {
-    SendMessageW(rule_kind, CBEM_SETIMAGELIST, 0, image_list);
     for (index, label) in [
         "Wildcard (*)",
         tr(english, "Regulární výraz", "Regular expression"),
@@ -1297,6 +1365,17 @@ unsafe fn set_list_subitem(list: HWND, row: usize, column: i32, value: &str) {
 }
 
 unsafe fn load_selected_rule_into_editor() {
+    let has_selection = STATE.with(|state| {
+        state
+            .borrow()
+            .as_ref()
+            .and_then(|state| selected_browser(state.rules_list))
+            .is_some()
+    });
+    if !has_selection {
+        clear_rule_editor();
+        return;
+    }
     let values = STATE.with(|state| {
         let state = state.borrow();
         let state = state.as_ref()?;
@@ -1434,6 +1513,14 @@ unsafe fn save_or_update_rule(hwnd: HWND) {
         return;
     };
     let selected = selected_browser(handles.0);
+    if is_browser_launcher_path(Path::new(&browser.executable)) {
+        message_box(
+            hwnd,
+            "Browser Launcher nelze nastavit jako cílový prohlížeč.",
+            MB_OK | MB_ICONWARNING,
+        );
+        return;
+    }
     if selected == Some(handles.6) {
         select_browser(handles.7, browser_index as usize);
         set_text(handles.8, get_text(handles.4).trim());
@@ -1441,6 +1528,10 @@ unsafe fn save_or_update_rule(hwnd: HWND) {
         refresh_rules_list();
         select_browser(handles.0, handles.6);
         SetFocus(handles.0);
+        return;
+    }
+    if kind_index > 1 {
+        message_box(hwnd, "Vyberte platný typ vzoru.", MB_OK | MB_ICONWARNING);
         return;
     }
     let rule = RoutingRule {
@@ -1709,6 +1800,9 @@ unsafe fn handle_url(hwnd: HWND, url: String) {
     if !Path::new(target.path).is_file() {
         return;
     }
+    if is_browser_launcher_path(Path::new(target.path)) {
+        return;
+    }
     let browser_path = target.path.to_owned();
     let parameters = build_browser_arguments(target.arguments, &url);
     let result = ShellExecuteW(
@@ -1729,6 +1823,34 @@ unsafe fn handle_url(hwnd: HWND, url: String) {
         record_history(&url, &browser_path, &parameters);
         foreground::bring_browser_to_front(browser_path);
     }
+}
+
+fn is_browser_launcher_path(path: &Path) -> bool {
+    let normalized = |candidate: &Path| {
+        candidate
+            .canonicalize()
+            .unwrap_or_else(|_| candidate.to_path_buf())
+            .to_string_lossy()
+            .replace('/', "\\")
+            .to_ascii_lowercase()
+    };
+    let target = normalized(path);
+    if std::env::current_exe()
+        .ok()
+        .as_deref()
+        .map(normalized)
+        .as_deref()
+        == Some(target.as_str())
+    {
+        return true;
+    }
+    std::env::var_os("LOCALAPPDATA")
+        .map(|root| {
+            Path::new(&root)
+                .join("BrowserLauncher")
+                .join("BrowserLauncher.exe")
+        })
+        .is_some_and(|stable| normalized(&stable) == target)
 }
 
 unsafe fn record_history(url: &str, browser_path: &str, arguments: &str) {
@@ -2099,14 +2221,21 @@ unsafe fn remove_tray_icon(hwnd: HWND) {
     Shell_NotifyIconW(NIM_DELETE, &data);
 }
 
-unsafe fn send_url(hwnd: HWND, url: &str) {
-    let encoded = wide(url);
-    let data = COPYDATASTRUCT {
-        dwData: 1,
-        cbData: (encoded.len() * 2) as u32,
-        lpData: encoded.as_ptr().cast::<c_void>() as *mut c_void,
-    };
-    SendMessageW(hwnd, WM_COPYDATA, 0, &data as *const _ as isize);
+unsafe fn decode_copydata_url(data: &COPYDATASTRUCT) -> Option<String> {
+    if data.cbData == 0
+        || data.cbData as usize > instance::MAX_URL_BYTES
+        || !data.cbData.is_multiple_of(2)
+        || data.lpData.is_null()
+    {
+        return None;
+    }
+    let bytes = std::slice::from_raw_parts(data.lpData.cast::<u8>(), data.cbData as usize);
+    let units = bytes
+        .chunks_exact(2)
+        .map(|pair| u16::from_ne_bytes([pair[0], pair[1]]))
+        .take_while(|unit| *unit != 0)
+        .collect::<Vec<_>>();
+    (!units.is_empty()).then(|| String::from_utf16_lossy(&units))
 }
 
 fn command_line_url() -> Option<String> {
@@ -2174,7 +2303,11 @@ fn write_fixed_wide<const N: usize>(target: &mut [u16; N], value: &str) {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_browser_arguments, quote_argument};
+    use std::ffi::c_void;
+
+    use windows_sys::Win32::System::DataExchange::COPYDATASTRUCT;
+
+    use super::{build_browser_arguments, decode_copydata_url, quote_argument};
 
     #[test]
     fn appends_url_when_template_has_no_placeholder() {
@@ -2195,5 +2328,27 @@ mod tests {
     #[test]
     fn quotes_embedded_quotes_and_trailing_backslashes() {
         assert_eq!(quote_argument("a\"b\\"), "\"a\\\"b\\\\\"");
+    }
+
+    #[test]
+    fn rejects_invalid_copydata_payloads() {
+        let payload = [b'x', 0];
+        let invalid = COPYDATASTRUCT {
+            dwData: 1,
+            cbData: 1,
+            lpData: payload.as_ptr() as *mut c_void,
+        };
+        assert!(unsafe { decode_copydata_url(&invalid) }.is_none());
+    }
+
+    #[test]
+    fn decodes_copydata_url_without_alignment_assumptions() {
+        let payload = [b'h', 0, b'i', 0, 0, 0];
+        let data = COPYDATASTRUCT {
+            dwData: 1,
+            cbData: payload.len() as u32,
+            lpData: payload.as_ptr() as *mut c_void,
+        };
+        assert_eq!(unsafe { decode_copydata_url(&data) }.as_deref(), Some("hi"));
     }
 }

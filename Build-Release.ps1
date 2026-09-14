@@ -26,11 +26,10 @@ if ([System.IO.Path]::GetDirectoryName($installedExecutable) -ne $installDirecto
     throw "Neplatná cílová cesta: $installedExecutable"
 }
 
-$managedPaths = @($releaseExecutable, $installedExecutable)
-$runningLaunchers = @(Get-Process -ErrorAction SilentlyContinue | ForEach-Object {
+$runningReleaseLaunchers = @(Get-Process -ErrorAction SilentlyContinue | ForEach-Object {
     try {
         $processPath = [System.IO.Path]::GetFullPath($_.Path)
-        if ($managedPaths -contains $processPath) {
+        if ($processPath -eq $releaseExecutable) {
             $_
         }
     }
@@ -39,12 +38,12 @@ $runningLaunchers = @(Get-Process -ErrorAction SilentlyContinue | ForEach-Object
     }
 })
 
-foreach ($process in $runningLaunchers) {
+foreach ($process in $runningReleaseLaunchers) {
     Write-Host "Ukončuji starou instanci PID $($process.Id): $($process.Path)"
     Stop-Process -Id $process.Id
 }
-if ($runningLaunchers.Count -gt 0) {
-    Wait-Process -Id @($runningLaunchers.Id) -Timeout 10 -ErrorAction SilentlyContinue
+if ($runningReleaseLaunchers.Count -gt 0) {
+    Wait-Process -Id @($runningReleaseLaunchers.Id) -Timeout 10 -ErrorAction SilentlyContinue
 }
 
 Push-Location $projectRoot
@@ -63,20 +62,47 @@ if (-not (Test-Path -LiteralPath $releaseExecutable -PathType Leaf)) {
     throw "Release EXE nebyl vytvořen: $releaseExecutable"
 }
 
-[System.IO.Directory]::CreateDirectory($installDirectory) | Out-Null
-Copy-Item -LiteralPath $releaseExecutable -Destination $installedExecutable -Force
+$runningInstalledLaunchers = @(Get-Process -ErrorAction SilentlyContinue | ForEach-Object {
+    try {
+        $processPath = [System.IO.Path]::GetFullPath($_.Path)
+        if ($processPath -eq $installedExecutable) {
+            $_
+        }
+    }
+    catch {
+        # Některé systémové procesy neumožňují přečíst Path; nejsou naším cílem.
+    }
+})
+foreach ($process in $runningInstalledLaunchers) {
+    Write-Host "Ukončuji starou nainstalovanou instanci PID $($process.Id): $($process.Path)"
+    Stop-Process -Id $process.Id
+}
+if ($runningInstalledLaunchers.Count -gt 0) {
+    Wait-Process -Id @($runningInstalledLaunchers.Id) -Timeout 10 -ErrorAction SilentlyContinue
+}
 
-Write-Host 'Aktualizuji per-user registraci pro HTTP a HTTPS...'
-& $installedExecutable --install-register
-if ($LASTEXITCODE -ne 0) {
-    throw "Registrace skončila s kódem $LASTEXITCODE."
+Write-Host 'Instaluji release a aktualizuji per-user registraci pro HTTP a HTTPS...'
+$registration = $null
+$retryDelays = @(250, 500, 1000)
+for ($attempt = 0; $attempt -lt $retryDelays.Count; $attempt++) {
+    $registration = Start-Process -FilePath $releaseExecutable -ArgumentList '--install-register' -Wait -PassThru -WindowStyle Hidden
+    if ($registration.ExitCode -eq 0) {
+        break
+    }
+    if ($attempt -lt ($retryDelays.Count - 1)) {
+        Write-Warning "Instalace skončila s kódem $($registration.ExitCode), opakuji pokus..."
+        Start-Sleep -Milliseconds $retryDelays[$attempt]
+    }
+}
+if ($null -eq $registration -or $registration.ExitCode -ne 0) {
+    throw "Instalace a registrace skončila s kódem $($registration.ExitCode)."
 }
 
 $deployed = Get-Item -LiteralPath $installedExecutable
 Write-Host "Nasazeno: $($deployed.FullName) ($($deployed.Length) bajtů)"
 
 if (-not $NoStart) {
-    $started = Start-Process -FilePath $installedExecutable -PassThru
+    $started = Start-Process -FilePath $installedExecutable -PassThru -WindowStyle Hidden
     Write-Host "Spuštěna nová instance PID $($started.Id)."
 }
 

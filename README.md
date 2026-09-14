@@ -1,99 +1,68 @@
 # Browser Launcher
 
-A minimalist tray URL router for Windows 10 and 11. It registers as an
-HTTP/HTTPS handler, selects the configured real browser, and forwards the URL
-with optional arguments.
+A small Windows 10/11 tray URL router. It registers as an HTTP/HTTPS handler,
+chooses a browser using the configured rules, and forwards the URL with
+optional arguments.
 
 Current version: **0.9.0**.
 
 ## Features
 
-- runs quietly as a single instance in the Windows notification area,
-- forwards URLs to the running instance; if it is not running, starts in the tray,
-- lists system-registered browsers with their names and native icons,
-- configures one default browser and optional arguments with the `{url}`
-  placeholder,
-- routes URLs by ordered wildcard (`*`) or regular-expression rules,
-- keeps an undeletable **Default** fallback row at the end of the rule list,
-- supports drag-and-drop rule reordering,
-- keeps an in-memory history of successfully opened URLs with time, browser, and
-  arguments,
-- copies URL or arguments by clicking the corresponding history cell; the
-  context menu can copy a URL, arguments, or the complete record,
-- copies the last opened URL from the tray menu,
-- registers the application as a candidate default browser and opens Windows
-  default-app settings,
-- provides Czech and English user interfaces,
-- has no .NET runtime, WebView, Electron, or other application runtime
-  dependency.
+- Single instance running quietly in the tray.
+- Installed browsers with names and icons.
+- Ordered wildcard and regex rules; default browser as fallback.
+- Drag-and-drop rule reordering.
+- Custom browser arguments with `{url}`.
+- In-memory URL history with click-to-copy.
+- Copy the last URL from the tray menu.
+- HTTP/HTTPS registration in Windows.
+- Czech and English interfaces.
 
-History and the last URL exist only in RAM and disappear when the process exits.
-Persistent settings are stored under `HKCU\\Software\\BrowserLauncher`.
+Settings are stored under `HKCU\Software\BrowserLauncher`; history is cleared on exit.
 
 ## Requirements
 
 - Windows 10 or Windows 11 (64-bit),
-- Rust 1.85 or newer with the `x86_64-pc-windows-msvc` toolchain,
+- Rust 1.88 or newer with the `x86_64-pc-windows-msvc` toolchain,
 - Visual Studio Build Tools with the **Desktop development with C++** workload.
 
-The project uses Rust edition 2024. Exact crate versions are pinned in
-`Cargo.lock`; the main dependencies are `windows-sys`, `regex`, and the
-build-time `embed-resource` crate.
+Dependency versions are pinned in `Cargo.lock`.
 
 ## Build
 
-Run a release build from the project root:
+Choose a build command from the project root:
 
 ```powershell
 cargo build --release
+.\Build-Release.ps1              # build, deploy, register, and start
+.\Build-Release.ps1 -NoStart      # build and deploy without starting
 ```
 
-The executable is written to `target\\release\\browser-launcher.exe`. To build,
-deploy to the stable per-user location, refresh registration, and replace the
-running instance, use:
-
-```powershell
-.\\Build-Release.ps1
-```
-
-To build and deploy without starting the application:
-
-```powershell
-.\\Build-Release.ps1 -NoStart
-```
-
-The deployment path is
-`%LOCALAPPDATA%\\BrowserLauncher\\BrowserLauncher.exe`.
+The build output is `target\release\browser-launcher.exe`; the deployment script
+installs it to `%LOCALAPPDATA%\BrowserLauncher\BrowserLauncher.exe`.
 
 ## Usage
 
 Start the executable with a URL:
 
 ```powershell
-.\\target\\release\\browser-launcher.exe "https://example.com"
+.\target\release\browser-launcher.exe "https://example.com"
 ```
 
-If the application is already running, the URL is forwarded to that instance.
-Otherwise Windows starts it, the URL is opened in the selected browser, and the
-application remains only in the tray.
+If already running, the URL is forwarded to that instance; otherwise the
+application starts in the tray and opens it in the selected browser.
 
-Use **Settings** to select the default browser, its arguments, and routing
-rules. The **Default** rule cannot be deleted or moved. Windows does not allow
-an application to silently change the default handler; the registration button
-therefore prepares the registration and opens the system page where the user
-confirms the choice.
+Double-click the tray icon to select a browser and routing rules, then **Save**.
+Arguments can contain `{url}`; otherwise the quoted URL is appended. The first
+matching rule wins; **Default** is always last. History cells copy URLs or arguments.
+
+**Settings → Set as default browser** opens Windows settings, where you confirm
+the HTTP/HTTPS association.
 
 To register the stable copy without opening the system settings page:
 
 ```powershell
-.\\target\\release\\browser-launcher.exe --install-register
-```
-
-## Verification
-
-```powershell
-cargo test
-cargo clippy --all-targets -- -D warnings
+.\target\release\browser-launcher.exe --install-register
 ```
 
 ## License

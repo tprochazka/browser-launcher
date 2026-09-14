@@ -12,6 +12,14 @@ use crate::routing::{RoutingRule, decode_rules, encode_rules};
 
 const KEY_PATH: &str = r"Software\BrowserLauncher";
 
+struct RegistryKey(HKEY);
+
+impl Drop for RegistryKey {
+    fn drop(&mut self) {
+        unsafe { RegCloseKey(self.0) };
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Config {
     pub browser_path: String,
@@ -36,31 +44,27 @@ impl Config {
         let Some(key) = open_existing_key()? else {
             return Ok(Self::default());
         };
-        let encoded_rules = read_string(key, "RoutingRules")?.unwrap_or_default();
+        let encoded_rules = read_string(key.0, "RoutingRules")?.unwrap_or_default();
         let routing_rules = decode_rules(&encoded_rules).map_err(|message| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!("Pravidla nelze načíst: {message}"),
             )
         })?;
-        let result = Ok(Self {
-            browser_path: read_string(key, "BrowserPath")?.unwrap_or_default(),
-            browser_arguments: read_string(key, "BrowserArguments")?.unwrap_or_default(),
+        Ok(Self {
+            browser_path: read_string(key.0, "BrowserPath")?.unwrap_or_default(),
+            browser_arguments: read_string(key.0, "BrowserArguments")?.unwrap_or_default(),
             routing_rules,
-            language: read_string(key, "Language")?.unwrap_or_else(|| "cs".to_owned()),
-        });
-        unsafe { RegCloseKey(key) };
-        result
+            language: read_string(key.0, "Language")?.unwrap_or_else(|| "cs".to_owned()),
+        })
     }
 
     pub fn save(&self) -> io::Result<()> {
         let key = create_key(KEY_WRITE)?;
-        let result = write_string(key, "BrowserPath", &self.browser_path)
-            .and_then(|_| write_string(key, "BrowserArguments", &self.browser_arguments))
-            .and_then(|_| write_string(key, "RoutingRules", &encode_rules(&self.routing_rules)))
-            .and_then(|_| write_string(key, "Language", &self.language));
-        unsafe { RegCloseKey(key) };
-        result
+        write_string(key.0, "BrowserPath", &self.browser_path)
+            .and_then(|_| write_string(key.0, "BrowserArguments", &self.browser_arguments))
+            .and_then(|_| write_string(key.0, "RoutingRules", &encode_rules(&self.routing_rules)))
+            .and_then(|_| write_string(key.0, "Language", &self.language))
     }
 
     pub fn is_configured(&self) -> bool {
@@ -68,20 +72,20 @@ impl Config {
     }
 }
 
-fn open_existing_key() -> io::Result<Option<HKEY>> {
+fn open_existing_key() -> io::Result<Option<RegistryKey>> {
     let path = wide(KEY_PATH);
     let mut key: HKEY = null_mut();
     let status = unsafe { RegOpenKeyExW(HKEY_CURRENT_USER, path.as_ptr(), 0, KEY_READ, &mut key) };
     if status == ERROR_FILE_NOT_FOUND {
         Ok(None)
     } else if status == ERROR_SUCCESS {
-        Ok(Some(key))
+        Ok(Some(RegistryKey(key)))
     } else {
         Err(io::Error::from_raw_os_error(status as i32))
     }
 }
 
-fn create_key(access: u32) -> io::Result<HKEY> {
+fn create_key(access: u32) -> io::Result<RegistryKey> {
     let path = wide(KEY_PATH);
     let mut key: HKEY = null_mut();
     let status = unsafe {
@@ -98,7 +102,7 @@ fn create_key(access: u32) -> io::Result<HKEY> {
         )
     };
     if status == ERROR_SUCCESS {
-        Ok(key)
+        Ok(RegistryKey(key))
     } else {
         Err(io::Error::from_raw_os_error(status as i32))
     }

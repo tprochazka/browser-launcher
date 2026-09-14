@@ -22,9 +22,18 @@ pub fn installed_browsers() -> Vec<BrowserInfo> {
     for root in [HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE] {
         enumerate_root(root, &mut browsers);
     }
-    browsers.sort_by_key(|browser| browser.name.to_lowercase());
-    browsers.dedup_by(|left, right| left.executable.eq_ignore_ascii_case(&right.executable));
-    browsers
+    let mut unique = Vec::with_capacity(browsers.len());
+    for browser in browsers {
+        if !unique.iter().any(|existing: &BrowserInfo| {
+            existing
+                .executable
+                .eq_ignore_ascii_case(&browser.executable)
+        }) {
+            unique.push(browser);
+        }
+    }
+    unique.sort_by_key(|browser| browser.name.to_lowercase());
+    unique
 }
 
 fn enumerate_root(root: HKEY, browsers: &mut Vec<BrowserInfo>) {
@@ -59,6 +68,8 @@ fn enumerate_root(root: HKEY, browsers: &mut Vec<BrowserInfo>) {
             if let Some(browser) = read_browser(parent, &subkey) {
                 browsers.push(browser);
             }
+        } else {
+            break;
         }
         index += 1;
     }
@@ -132,8 +143,12 @@ fn executable_from_command(command: &str) -> Option<String> {
     if let Some(rest) = command.strip_prefix('"') {
         return rest.find('"').map(|end| rest[..end].to_owned());
     }
-    let lowercase = command.to_lowercase();
-    let end = lowercase.find(".exe")? + 4;
+    let end = command.char_indices().find_map(|(start, _)| {
+        command
+            .get(start..start + 4)
+            .filter(|suffix| suffix.eq_ignore_ascii_case(".exe"))
+            .map(|_| start + 4)
+    })?;
     Some(command[..end].to_owned())
 }
 
@@ -158,6 +173,14 @@ mod tests {
         assert_eq!(
             executable_from_command(r"C:\Program Files\Browser\browser.exe --flag"),
             Some(r"C:\Program Files\Browser\browser.exe".to_owned())
+        );
+    }
+
+    #[test]
+    fn extracts_unquoted_executable_after_unicode_without_changing_byte_offsets() {
+        assert_eq!(
+            executable_from_command("C:\\İ\\browser.exe --flag"),
+            Some("C:\\İ\\browser.exe".to_owned())
         );
     }
 }
